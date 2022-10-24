@@ -1,4 +1,5 @@
 import copy
+import logging
 
 import geometry_msgs
 import pytest
@@ -8,6 +9,9 @@ import world_control_msgs.srv
 
 import unreal_interface_py.object
 import unreal_interface_py.types
+
+# If you want to see the logging output of the module under test, start pytest with:
+# pytest --log-cli-level=DEBUG
 
 
 @pytest.fixture(scope=u'module')
@@ -23,7 +27,23 @@ def function_setup(request, module_setup):
     pass
 
 
+def check_pose_equality(pose1, pose2):
+    assert pose1.position.x == pytest.approx(pose2.position.x, rel=1e2)
+    assert pose1.position.y == pytest.approx(pose2.position.y, rel=1e2)
+    assert pose1.position.z == pytest.approx(pose2.position.z, rel=1e2)
+
+    # Quats can be returned with inversed negativity and still be correct
+    # Simple conversion by applying abs() on all elements.
+    # TODO check if the non-inverted or the fully inverted version of the quat is returned. Not element by element.
+    assert abs(pose1.orientation.x) == pytest.approx(abs(pose2.orientation.x), rel=1e2)
+    assert abs(pose1.orientation.y) == pytest.approx(abs(pose2.orientation.y), rel=1e2)
+    assert abs(pose1.orientation.z) == pytest.approx(abs(pose2.orientation.z), rel=1e2)
+    assert abs(pose1.orientation.w) == pytest.approx(abs(pose2.orientation.w), rel=1e2)
+
+
 uio = unreal_interface_py.object.Object()
+uio.logger.setLevel(logging.DEBUG)
+rospy.init_node("uio_object_test")
 
 
 class TestObject(object):
@@ -124,7 +144,7 @@ class TestObject(object):
 
         req.physics_properties.mobility = req.physics_properties.STATIONARY
 
-        req.actor_label = "TestObjectLabel"
+        req.actor_label = "GetPoseTestObjectLabel"
 
         id_of_spawned_object = uio.spawn_object(req)
 
@@ -140,23 +160,55 @@ class TestObject(object):
         # Check pose of object
         pose = uio.get_object_pose(id_of_spawned_object)
 
-        assert pose.position.x == pytest.approx(0.2)
-        assert pose.position.y == pytest.approx(0.5)
-        assert pose.position.z == pytest.approx(1.0)
-
-        # Quats can be returned with inversed negativity and still be correct
-        # Simple conversion by applying abs() on all elements.
-        # TODO check if the non-inverted or the fully inverted version of the quat is returned. Not element by element.
-        assert abs(pose.orientation.x) == pytest.approx(0.383, rel=1e-2)
-        assert abs(pose.orientation.y) == pytest.approx(0.791, rel=1e-2)
-        assert abs(pose.orientation.z) == pytest.approx(0.301, rel=1e-2)
-        assert abs(pose.orientation.w) == pytest.approx(0.370, rel=1e-2)
+        check_pose_equality(pose, req.pose)
 
         assert uio.delete_object(id_of_spawned_object)
         rospy.sleep(0.5)
 
     def test_get_object_pose_async(self, function_setup):
-        assert True
+        req = world_control_msgs.srv.SpawnModelRequest()
+
+        req.name = "AlbiHimbeerJuice"
+
+        req.pose.position.x = 0.2
+        req.pose.position.y = 0.5
+        req.pose.position.z = 1.00
+        req.pose.orientation.x = 0
+        req.pose.orientation.y = 0
+        req.pose.orientation.z = 0
+        req.pose.orientation.w = 1
+
+        req.physics_properties.mobility = req.physics_properties.DYNAMIC
+
+        req.actor_label = "GetPoseAsyncTestObjectLabel"
+
+        id_of_spawned_object = uio.spawn_object(req)
+        assert uio.spawned_object_count() == 1
+        assert uio.is_object_known(id_of_spawned_object)
+        rospy.sleep(1.5)  # Sleep a while and wait for a pose update coming in
+
+        object_info = uio.get_object_info(id_of_spawned_object)
+        assert object_info is not None
+        check_pose_equality(req.pose, object_info.pose)
+
+
+        ###############################
+        # Move object and check again
+        ###############################
+        new_object_pose = copy.deepcopy(req.pose)
+        new_object_pose.position.z = 1.5  # Raise the object a bit
+
+        assert uio.set_object_pose(id_of_spawned_object, new_object_pose)
+        rospy.sleep(1.5) # Wait for a pose update...
+
+        object_info = uio.get_object_info(id_of_spawned_object)
+        assert object_info is not None
+        check_pose_equality(req.pose, object_info.pose)
+
+        # Tear down
+        assert uio.delete_object(id_of_spawned_object)
+        assert uio.spawned_object_count() == 0
+        rospy.sleep(0.5)
 
     def test_delete_all_spawned_objects(self, function_setup):
         req = world_control_msgs.srv.SpawnModelRequest()
@@ -173,7 +225,7 @@ class TestObject(object):
 
         req.physics_properties.mobility = req.physics_properties.STATIONARY
 
-        req.actor_label = "TestObjectLabel"
+        req.actor_label = "DeleteAllTestObjectLabel"
 
         id_of_spawned_object = uio.spawn_object(req)
 
@@ -195,7 +247,7 @@ class TestObject(object):
 
         req2.physics_properties.mobility = req2.physics_properties.STATIONARY
 
-        req2.actor_label = "TestObjectLabel2"
+        req2.actor_label = "DeleteAllTestObjectLabel2"
 
         id_of_spawned_object2 = uio.spawn_object(req2)
 
@@ -230,7 +282,7 @@ class TestObject(object):
 
         req.physics_properties.mobility = req.physics_properties.STATIONARY
 
-        req.actor_label = "TestObjectLabel"
+        req.actor_label = "DeleteAllTagTestObjectLabel"
 
         id_of_spawned_object = uio.spawn_object(req)
 
@@ -252,7 +304,7 @@ class TestObject(object):
 
         req2.physics_properties.mobility = req2.physics_properties.STATIONARY
 
-        req2.actor_label = "TestObjectLabel2"
+        req2.actor_label = "DeleteAllTagTestObjectLabel2"
 
         id_of_spawned_object2 = uio.spawn_object(req2)
 
@@ -284,13 +336,13 @@ class TestObject(object):
 
         req.physics_properties.mobility = req.physics_properties.STATIONARY
 
-        req.actor_label = "TestObjectLabel"
+        req.actor_label = "ObstructionTestObjectLabel"
 
         id_of_spawned_object = uio.spawn_object(req)
         rospy.sleep(1.0)
 
         req2 = copy.deepcopy(req)
-        req2.actor_label = "TestObjectLabel2"
+        req2.actor_label = "ObstructionTestObjectLabel2"
         req2.spawn_collision_check = True
 
         # Check that obstruction/collision is detected and exception is raised

@@ -1,9 +1,12 @@
 import copy
+import logging
 from threading import Lock
 
 import geometry_msgs.msg
 import rospy
 import datetime
+
+import tf2_msgs.msg
 
 import world_control_msgs.srv
 import world_control_msgs.msg
@@ -57,6 +60,7 @@ class RequestFailed(Exception):
 
 
 class Object:
+
     def init(self):
         self.spawn_client = rospy.ServiceProxy(UROSWORDCONTROL_DOMAIN + "/spawn_model",
                                                world_control_msgs.srv.SpawnModel)
@@ -69,8 +73,12 @@ class Object:
         self.get_pose_client = rospy.ServiceProxy(UROSWORDCONTROL_DOMAIN + "/get_model_pose",
                                                   world_control_msgs.srv.GetModelPose)
 
-        self.pose_update_subscriber = None
+        self.pose_update_subscriber = rospy.Subscriber("/unreal_interface/object_poses", tf2_msgs.msg.TFMessage,
+                                                       self.object_pose_update_callback)
+
+        # Not implemented yet
         self.state_update_subscriber = None
+        # Not implemented yet
         self.touch_subscriber = None
 
         # Due to an unsolved bug in ROSWorldControl where objects can't be found in modification operations,
@@ -79,6 +87,11 @@ class Object:
         self.retry_delay = 0.4
 
         self.spawned_objects = dict()  # Object ID as Key and unreal_interface_py.types.ObjectInfo as value
+        self.spawned_objects_update_lock = Lock()
+
+    def __init__(self):
+        self.init()
+        self.logger = logging.getLogger(__name__)
 
     def transport_available(self):
         """
@@ -95,13 +108,23 @@ class Object:
             rospy.wait_for_service(self.get_pose_client.resolved_name, timeout=TRANSPORT_CHECK_TIMEOUT_TIME)
 
         except Exception as e:
-            rospy.logdebug(f"Exception catched in transport_available(): {e}")
+            self.logger.info(f"Exception catched in transport_available(): {e}")
             return False
 
         return True
 
     def spawn_object(self,
                      req: world_control_msgs.srv.SpawnModelRequest) -> unreal_interface_py.types.ObjectInfo.IdType:
+        """
+        Spawn a single object in UE4.
+        This function DOES NOT implement sanity checks, but just publishes the given model and keeps track
+        of that in self.spawned_objects.
+        :param req: A world_control_msgs.srv.SpawnModelRequest with the necessary data to spawn an object.
+        :return: The id (type: unreal_interface_py.types.ObjectInfo.IdType) of the newly spawned object.
+        :raises: SpawnIdNotUnique
+        :raises: SpawnObstructed
+        :raises: SpawnFailed
+        """
         # Set a tag so we can uniquely identify the spawned objects in UE4
         tag = world_control_msgs.msg.Tag()
         tag.type = DEFAULT_SPAWN_TAG_TYPE
@@ -128,7 +151,14 @@ class Object:
         return unreal_interface_py.types.ObjectInfo.IdType(response.id)
 
     def delete_object(self, object_id: unreal_interface_py.types.ObjectInfo.IdType):
-        print(f"Deleting object {object_id}")
+        """
+        Delete a previously spawned object based on its id.
+
+        :param object_id: An unreal_interface_py.types.ObjectInfo.IdType that has been returned by
+        calling self.spawn_object()
+        :return: True if succesful, False otherwise.
+        """
+        self.logger.info(f"Deleting object {object_id}")
 
         req = world_control_msgs.srv.DeleteModelRequest()
         req.id = str(object_id)
@@ -136,33 +166,35 @@ class Object:
         if not self.delete_model(req):
             for i in range(0, self.retry_count):
                 rospy.sleep(self.retry_delay)
-                print(f"Retrying to delete object {object_id}")
+                self.logger.debug(f"Retrying to delete object {object_id}")
 
                 if not self.delete_model(req):
-                    print(f"Deleted object {object_id} successfully in iteration f{i}")
+                    self.logger.debug(f"Deleted object {object_id} successfully in iteration f{i}")
                     return True
 
-            print(f"Couldn't delete object {object_id}")
+            self.logger.error(f"Couldn't delete object {object_id}")
             return False
 
         return True
 
     def delete_model(self, req: world_control_msgs.srv.DeleteModelRequest) -> bool:
         """
-        Low level delete func
-        :param req:
-        :return:
+        Low-level delete function. It handles the ROS communication and data prep.
+        Consider using self.delete_object instead.
+
+        :param req: A world_control_msgs.srv.DeleteModelRequest to state which object shall be deleted.
+        :return: True if successful, False otherwise.
         """
         response = self.delete_client(req)
 
         # When is a good time to delete stuff? Only if the service call suceeds?
         # But on the other hand, it will also return false if actors are already gone...
         if not response.success:
-            print("Warning: DeleteModel failed")
+            self.logger.warning("DeleteModel failed")
             return False
 
         if req.id not in self.spawned_objects:
-            print(f"DeleteModel couldn't find {req.id} in spawned_objects mapping")
+            self.logger.error(f"DeleteModel couldn't find {req.id} in spawned_objects mapping")
             self.print_all_object_info()
             return False
 
@@ -171,6 +203,12 @@ class Object:
         return True
 
     def is_object_known(self, object_id: unreal_interface_py.types.ObjectInfo.IdType) -> bool:
+        """
+        Check if the given object is already in the internal data representation/has been previously spawned.
+        :param object_id:
+        :return: True if object_id can be found, False otherwise.
+        :raises: TypeError if the supplied object_id is not a unreal_interface_py.types.ObjectInfo.IdType
+        """
         if not isinstance(object_id, unreal_interface_py.types.ObjectInfo.IdType):
             raise TypeError()
 
@@ -179,38 +217,53 @@ class Object:
     def get_object_info(self,
                         object_id: unreal_interface_py.types.ObjectInfo.IdType) -> unreal_interface_py.types.ObjectInfo:
         """
-        Access the object info of spawned objects.
+        Access the object info instance of spawned objects.
 
         :param object_id:
         :return: None, if object_id can't be found in the object representation. ObjectInfo for object_id otherwise.
         """
 
         # TODO: Object Infos can be changed asynchronously. Mutex/with:/__enter__/__exit__ needed?
-        if self.is_object_known(object_id):
-            print(f"Object with id ={object_id} not found in object representation")
+        if not self.is_object_known(object_id):
+            self.logger.error(f"Object with id = {object_id} not found in object representation")
             return None
 
         return self.spawned_objects[object_id]
 
     def add_object_info(self, object_info: unreal_interface_py.types.ObjectInfo) -> bool:
+        """
+        Adding an instance of unreal_interface_py.types.ObjectInfo to the internal data representation.
+        This is usually automatically done after spawning an object.
+
+        :param object_info:
+        :return: False if data is missing, True otherwise.
+        """
         if object_info.id == "":
-            print("Error in add_object_info(): ID is empty")
+            self.logger.error("Error in add_object_info(): ID is empty")
             return False
 
         if self.is_object_known(object_info.id):
-            print(f"Warning in add_object_info(): Object with id={object_info.id} is already known")
+            self.logger.warning(f"Warning in add_object_info(): Object with id={object_info.id} is already known")
 
         self.spawned_objects[object_info.id] = object_info
         return True
 
     def print_all_object_info(self):
         for key, value in self.spawned_objects.items():
-            print(value)
+            self.logger.info(value)
 
     def spawned_object_count(self):
         return len(self.spawned_objects)
 
     def set_model_pose(self, req: world_control_msgs.srv.SetModelPoseRequest) -> bool:
+        """
+        Low-level pose setting function. It handles the ROS communication and data prep.
+        Consider using self.set_object_pose instead.
+
+        :param req:
+        :return: True if successful, False otherwise.
+        """
+
         response: world_control_msgs.srv.SetModelPoseResponse = self.set_pose_client(req)
 
         if not response.success:
@@ -231,26 +284,33 @@ class Object:
         req.pose = pose
 
         if not self.is_object_known(object_id):
-            print(f"Object {object_id} is not known. Can't set pose.")
+            self.logger.error(f"Object {object_id} is not known. Can't set pose.")
             self.print_all_object_info()
             return False
 
         if not self.set_model_pose(req):
             for i in range(0, self.retry_count):
                 rospy.sleep(self.retry_delay)
-                print(f"Retrying to set pose for object {object_id}")
+                self.logger.debug(f"Retrying to set pose for object {object_id}")
 
                 if not self.set_model_pose(req):
-                    print(f"Object {object_id} successfully set pose in iteration f{i}")
+                    self.logger.debug(f"Object {object_id} successfully set pose in iteration f{i}")
                     return True
 
-            print(f"Couldn't update pose for object {object_id}")
+            self.logger.error(f"Couldn't update pose for object {object_id}")
             return False
 
         return True
 
     def get_object_pose(self, object_id: unreal_interface_py.types.ObjectInfo.IdType) -> geometry_msgs.msg.Pose:
+        """
+        Request the current pose from a known object.
+        This method will block the execution until the pose has been read.
+        You can also consider using self.get_object_info() to get pose updates asynchronously.
 
+        :param object_id: A unreal_interface_py.types.ObjectInfo.IdType of a known object
+        :return: The pose if the object pose could be fetched, False otherwise.
+        """
         req = world_control_msgs.srv.GetModelPoseRequest()
         req.id = str(object_id)
 
@@ -269,13 +329,13 @@ class Object:
         It is rather slow, so consider using self.delete_all_spawned_objects_by_tag()
         :return: True if all objects could be deleted, False otherwise
         """
-        print("Deleting all previously spawned objects")
+        self.logger.info("Deleting all previously spawned objects")
         spawned_objects = copy.deepcopy(self.spawned_objects)
         return_val = True
 
         for key, value in spawned_objects.items():
             if not self.delete_object(key):
-                print(f"delete_all_spawned_objects: DeleteObject on id={key} failed")
+                self.logger.warning(f"delete_all_spawned_objects: DeleteObject on id={key} failed")
                 return_val = False
 
         return return_val
@@ -284,7 +344,7 @@ class Object:
         """
         Delete all spawned objects at once by referring to the tag key and type we set in self.spawn_model.
         """
-        print(f"Deleting all objects with key {DEFAULT_SPAWN_TAG_KEY} and type {DEFAULT_SPAWN_TAG_TYPE}")
+        self.logger.info(f"Deleting all objects with key {DEFAULT_SPAWN_TAG_KEY} and type {DEFAULT_SPAWN_TAG_TYPE}")
         req = world_control_msgs.srv.DeleteAllRequest()
         req.key_to_delete = DEFAULT_SPAWN_TAG_KEY
         req.type_to_delete = DEFAULT_SPAWN_TAG_TYPE
@@ -299,5 +359,34 @@ class Object:
 
         return True
 
-    def __init__(self):
-        self.init()
+    ###############################################
+    #                 Callbacks
+    ###############################################
+
+    def object_pose_update_callback(self, msg: tf2_msgs.msg.TFMessage):
+        """
+        Receive the continuous pose updates from the Object Info UE4 plugin to
+        set the current pose of objects in self.spawned_objects
+
+        :param msg:
+        """
+        with self.spawned_objects_update_lock:
+            for transform in msg.transforms:  # type: geometry_msgs.msg.TransformStamped
+                object_id = unreal_interface_py.types.ObjectInfo.IdType(transform.header.frame_id)
+
+                if not self.is_object_known(object_id):
+                    self.logger.debug(
+                        f"INFO in object_pose_update_callback: {object_id} is unknown. Ignoring pose update.")
+                    continue
+
+                updated_pose = geometry_msgs.msg.Pose()
+                updated_pose.position.x = transform.transform.translation.x
+                updated_pose.position.y = transform.transform.translation.y
+                updated_pose.position.z = transform.transform.translation.z
+
+                updated_pose.orientation.x = transform.transform.rotation.x
+                updated_pose.orientation.y = transform.transform.rotation.y
+                updated_pose.orientation.z = transform.transform.rotation.z
+                updated_pose.orientation.w = transform.transform.rotation.w
+
+                self.spawned_objects[object_id].pose = updated_pose
