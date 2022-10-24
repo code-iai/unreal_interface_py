@@ -1,3 +1,7 @@
+import copy
+from threading import Lock
+
+import geometry_msgs.msg
 import rospy
 import datetime
 
@@ -21,7 +25,7 @@ class SpawnIdNotUnique(Exception):
 
     def __init__(self):
         self.message = "The object that you want to spawn is requested to have an ID that is already present"
-        self.__init__(self.message)
+        super().__init__(self.message)
 
 
 class SpawnObstructed(Exception):
@@ -30,7 +34,7 @@ class SpawnObstructed(Exception):
     def __init__(self):
         self.message = "The object that you want to spawn is requested to be in a place where it would get into " \
                        "collision "
-        self.__init__(self.message)
+        super().__init__(self.message)
 
 
 class SpawnFailed(Exception):
@@ -38,7 +42,18 @@ class SpawnFailed(Exception):
 
     def __init__(self):
         self.message = "Generic spawn failed. No details available from UROSWorldControl about the cause"
-        self.__init__(self.message)
+        super().__init__(self.message)
+
+
+class RequestFailed(Exception):
+    """Generic request failed for service calls. No details available from UROSWorldControl about the cause.
+    Please note, that this should not be raised when you just can't reach a service. It should not be used when
+    a rospy.ServiceException would be more approriate. This exception should only be used when the service calls
+    returned a non-success state."""
+
+    def __init__(self):
+        self.message = "Generic request failed. No details available from UROSWorldControl about the cause"
+        super().__init__(self.message)
 
 
 class Object:
@@ -155,12 +170,134 @@ class Object:
 
         return True
 
+    def is_object_known(self, object_id: unreal_interface_py.types.ObjectInfo.IdType) -> bool:
+        if not isinstance(object_id, unreal_interface_py.types.ObjectInfo.IdType):
+            raise TypeError()
+
+        return object_id in self.spawned_objects
+
+    def get_object_info(self,
+                        object_id: unreal_interface_py.types.ObjectInfo.IdType) -> unreal_interface_py.types.ObjectInfo:
+        """
+        Access the object info of spawned objects.
+
+        :param object_id:
+        :return: None, if object_id can't be found in the object representation. ObjectInfo for object_id otherwise.
+        """
+
+        # TODO: Object Infos can be changed asynchronously. Mutex/with:/__enter__/__exit__ needed?
+        if self.is_object_known(object_id):
+            print(f"Object with id ={object_id} not found in object representation")
+            return None
+
+        return self.spawned_objects[object_id]
+
+    def add_object_info(self, object_info: unreal_interface_py.types.ObjectInfo) -> bool:
+        if object_info.id == "":
+            print("Error in add_object_info(): ID is empty")
+            return False
+
+        if self.is_object_known(object_info.id):
+            print(f"Warning in add_object_info(): Object with id={object_info.id} is already known")
+
+        self.spawned_objects[object_info.id] = object_info
+        return True
+
     def print_all_object_info(self):
         for key, value in self.spawned_objects.items():
             print(value)
 
     def spawned_object_count(self):
         return len(self.spawned_objects)
+
+    def set_model_pose(self, req: world_control_msgs.srv.SetModelPoseRequest) -> bool:
+        response: world_control_msgs.srv.SetModelPoseResponse = self.set_pose_client(req)
+
+        if not response.success:
+            raise RequestFailed()
+
+        return True
+
+    def set_object_pose(self, object_id: unreal_interface_py.types.ObjectInfo.IdType,
+                        pose: geometry_msgs.msg.Pose) -> bool:
+        """
+        Update the object pose of a known object.
+
+        :rtype: bool
+        :return: True if successfully set object pose, False otherwise
+        """
+        req = world_control_msgs.srv.SetModelPoseRequest()
+        req.id = str(object_id)
+        req.pose = pose
+
+        if not self.is_object_known(object_id):
+            print(f"Object {object_id} is not known. Can't set pose.")
+            self.print_all_object_info()
+            return False
+
+        if not self.set_model_pose(req):
+            for i in range(0, self.retry_count):
+                rospy.sleep(self.retry_delay)
+                print(f"Retrying to set pose for object {object_id}")
+
+                if not self.set_model_pose(req):
+                    print(f"Object {object_id} successfully set pose in iteration f{i}")
+                    return True
+
+            print(f"Couldn't update pose for object {object_id}")
+            return False
+
+        return True
+
+    def get_object_pose(self, object_id: unreal_interface_py.types.ObjectInfo.IdType) -> geometry_msgs.msg.Pose:
+
+        req = world_control_msgs.srv.GetModelPoseRequest()
+        req.id = str(object_id)
+
+        response: world_control_msgs.srv.GetModelPoseResponse = self.get_pose_client(req)
+
+        if not response.success:
+            raise RequestFailed()
+
+        return response.pose
+
+    def delete_all_spawned_objects(self):
+        """
+        This method will delete all spawned objects based on its own internal data representation.
+        It basically goes one by one through the dict and issues a DeleteModel call for it.
+
+        It is rather slow, so consider using self.delete_all_spawned_objects_by_tag()
+        :return: True if all objects could be deleted, False otherwise
+        """
+        print("Deleting all previously spawned objects")
+        spawned_objects = copy.deepcopy(self.spawned_objects)
+        return_val = True
+
+        for key, value in spawned_objects.items():
+            if not self.delete_object(key):
+                print(f"delete_all_spawned_objects: DeleteObject on id={key} failed")
+                return_val = False
+
+        return return_val
+
+    def delete_all_spawned_objects_by_tag(self):
+        """
+        Delete all spawned objects at once by referring to the tag key and type we set in self.spawn_model.
+        """
+        print(f"Deleting all objects with key {DEFAULT_SPAWN_TAG_KEY} and type {DEFAULT_SPAWN_TAG_TYPE}")
+        req = world_control_msgs.srv.DeleteAllRequest()
+        req.key_to_delete = DEFAULT_SPAWN_TAG_KEY
+        req.type_to_delete = DEFAULT_SPAWN_TAG_TYPE
+        req.ignore_value = True
+
+        response: world_control_msgs.srv.DeleteAllResponse = self.delete_all_client(req)
+
+        if not response.success:
+            raise RequestFailed()
+
+        self.spawned_objects.clear()
+
+        return True
 
     def __init__(self):
         self.init()
