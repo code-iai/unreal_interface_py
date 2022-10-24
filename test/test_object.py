@@ -13,6 +13,9 @@ import unreal_interface_py.types
 # If you want to see the logging output of the module under test, start pytest with:
 # pytest --log-cli-level=DEBUG
 
+# Please note that the tests are written for the following UE4 project:
+# https://github.com/code-iai/UnrealInterfaceEnv
+
 
 @pytest.fixture(scope=u'module')
 def module_setup(request):
