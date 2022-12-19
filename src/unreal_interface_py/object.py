@@ -156,8 +156,15 @@ class Object:
 
         req = world_control_msgs.srv.SpawnModelRequest()
         req.id = object_id
-        req.name = self.get_object_info(object_id).actor_name
-        req.pose = self.get_object_info(object_id).pose
+
+        object_info = self.get_object_info(object_id)
+        req.pose = object_info.pose # TODO: use the latest pose info
+        # req.pose = object_info.original_spawn_request.pose
+        req.name = object_info.original_spawn_request.name
+        req.physics_properties = object_info.original_spawn_request.physics_properties
+        req.tags = object_info.original_spawn_request.tags
+
+        # How to handle: req.spawn_collision_check ?
 
         response: world_control_msgs.srv.SpawnModelResponse = self.spawn_client(req)
 
@@ -439,13 +446,13 @@ class Object:
                     continue
 
                 updated_pose = geometry_msgs.msg.Pose()
-                updated_pose.position.x = transform.transform.translation.x
-                updated_pose.position.y = transform.transform.translation.y
-                updated_pose.position.z = transform.transform.translation.z
+                updated_pose.position.x = transform.transform.translation.x / 100
+                updated_pose.position.y = -transform.transform.translation.y / 100
+                updated_pose.position.z = transform.transform.translation.z / 100
 
-                updated_pose.orientation.x = transform.transform.rotation.x
+                updated_pose.orientation.x = -transform.transform.rotation.x
                 updated_pose.orientation.y = transform.transform.rotation.y
-                updated_pose.orientation.z = transform.transform.rotation.z
+                updated_pose.orientation.z = -transform.transform.rotation.z
                 updated_pose.orientation.w = transform.transform.rotation.w
 
                 self.spawned_objects[object_id].pose = updated_pose

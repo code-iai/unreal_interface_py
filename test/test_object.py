@@ -476,3 +476,53 @@ class TestObject(object):
         rospy.sleep(1.0)
 
         assert uio.all_known_objects_in_unreal() is False
+
+    def test_update_pose_should_alter_object_info(self):
+        # TODO!!!
+        pass
+
+    def test_reconstruct_missing_object(self, function_setup):
+        """
+        It should be possible to detect if unreal has been closed and we have to resync our belief.
+        """
+        uio.clear_all_object_info()
+        req = world_control_msgs.srv.SpawnModelRequest()
+
+        req.name = "AlbiHimbeerJuice"
+
+        req.pose.position.x = 0.2
+        req.pose.position.y = 0.5
+        req.pose.position.z = 1.00
+        req.pose.orientation.x = 0
+        req.pose.orientation.y = 0
+        req.pose.orientation.z = 0
+        req.pose.orientation.w = 1
+
+        req.physics_properties.mobility = req.physics_properties.STATIONARY
+
+        req.actor_label = "test_reconstruct_missing_objectLabel"
+
+        id_of_spawned_object = uio.spawn_object(req)
+        rospy.sleep(1.0)
+
+        # use the deleteall service directly to fake closing and opening UE4 without touching
+        # the internal object representation of unreal_interface
+        req = world_control_msgs.srv.DeleteAllRequest()
+        req.key_to_delete = unreal_interface_py.object.DEFAULT_SPAWN_TAG_KEY
+        req.type_to_delete = unreal_interface_py.object.DEFAULT_SPAWN_TAG_TYPE
+        req.ignore_value = True
+        uio.delete_all_client(req)
+        rospy.sleep(1.0)
+
+        # assert uio.object_in_unreal(id_of_spawned_object) is False
+
+        # From here on, we can reconstruct the object
+        uio.respawn_object(id_of_spawned_object)
+        rospy.sleep(1.0)
+
+        assert uio.object_in_unreal(id_of_spawned_object)
+
+        rospy.sleep(1.5)
+
+        assert uio.delete_all_spawned_objects()
+        assert uio.spawned_object_count() == 0
