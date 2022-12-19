@@ -144,9 +144,35 @@ class Object:
         object_info = unreal_interface_py.types.ObjectInfo()
         object_info.id = response.id
         object_info.actor_name = response.name
+        object_info.original_spawn_request = req
+        object_info.pose = req.pose
 
         self.spawned_objects[response.id] = object_info
         return unreal_interface_py.types.ObjectInfo.IdType(response.id)
+
+    def respawn_object(self, object_id: unreal_interface_py.types.ObjectInfo.IdType) -> bool:
+        """If you have detected that an object that has been previously spawned does not exist
+        anymore in Unreal, you can respawn it based on the previously known data"""
+
+        req = world_control_msgs.srv.SpawnModelRequest()
+        req.id = object_id
+        req.name = self.get_object_info(object_id).actor_name
+        req.pose = self.get_object_info(object_id).pose
+
+        response: world_control_msgs.srv.SpawnModelResponse = self.spawn_client(req)
+
+        if not response.success:
+            if response.etype == ERROR_SPAWN_ID_NOT_UNIQUE:
+                raise SpawnIdNotUnique()
+            elif response.etype == ERROR_SPAWN_OBSTRUCTED:
+                raise SpawnObstructed()
+            else:
+                raise SpawnFailed()
+
+        if response.id != object_id:
+            raise Exception("Respawning failed: Differing IDs")
+
+        return True
 
     def delete_object(self, object_id: unreal_interface_py.types.ObjectInfo.IdType):
         """
@@ -301,6 +327,8 @@ class Object:
             self.logger.error(f"Couldn't update pose for object {object_id}")
             return False
 
+        # Update internal representation
+        self.get_object_info(object_id).pose = pose
         return True
 
     def get_object_pose(self, object_id: unreal_interface_py.types.ObjectInfo.IdType) -> geometry_msgs.msg.Pose:
@@ -319,6 +347,9 @@ class Object:
 
         if not response.success:
             raise RequestFailed()
+
+        # Update internal representation
+        self.get_object_info(object_id).pose = response.pose
 
         return response.pose
 
