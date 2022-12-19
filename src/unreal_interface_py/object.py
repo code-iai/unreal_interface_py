@@ -1,15 +1,13 @@
 import copy
+import datetime
 import logging
 from threading import Lock
 
 import geometry_msgs.msg
 import rospy
-import datetime
-
 import tf2_msgs.msg
-
-import world_control_msgs.srv
 import world_control_msgs.msg
+import world_control_msgs.srv
 
 import unreal_interface_py.types
 
@@ -255,6 +253,9 @@ class Object:
     def spawned_object_count(self):
         return len(self.spawned_objects)
 
+    def clear_all_object_info(self) -> None:
+        self.spawned_objects.clear()
+
     def set_model_pose(self, req: world_control_msgs.srv.SetModelPoseRequest) -> bool:
         """
         Low-level pose setting function. It handles the ROS communication and data prep.
@@ -356,6 +357,33 @@ class Object:
             raise RequestFailed()
 
         self.spawned_objects.clear()
+
+        return True
+
+    def all_known_objects_in_unreal(self) -> bool:
+        """
+        Check if all files from our internal object representation are still in Unreal.
+        """
+        for key, value in self.spawned_objects.items():
+            if not self.object_in_unreal(key):
+                self.logger.warning(f"Object with id={key} is in object representation, but not in Unreal")
+                self.print_all_object_info()
+                return False
+
+        return True
+
+    def object_in_unreal(self, object_id) -> bool:
+        """
+        Decide if the given object ID is present in Unreal.
+        Do this by requesting the pose of the object. If this fails, we can not be certain it's existing...
+        Please be aware that this function call is 'expensive', since it is not based on the local
+        representation, but on calls to UE
+        """
+        try:
+            resp = self.get_object_pose(object_id)
+        except RequestFailed as e:
+            # print(f"Catched exception {e}")
+            return False
 
         return True
 

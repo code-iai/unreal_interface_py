@@ -1,14 +1,13 @@
 import copy
 import logging
 
-import geometry_msgs
 import pytest
 import rospy
-
 import world_control_msgs.srv
 
 import unreal_interface_py.object
 import unreal_interface_py.types
+
 
 # If you want to see the logging output of the module under test, start pytest with:
 # pytest --log-cli-level=DEBUG
@@ -194,7 +193,6 @@ class TestObject(object):
         assert object_info is not None
         check_pose_equality(req.pose, object_info.pose)
 
-
         ###############################
         # Move object and check again
         ###############################
@@ -202,7 +200,7 @@ class TestObject(object):
         new_object_pose.position.z = 1.5  # Raise the object a bit
 
         assert uio.set_object_pose(id_of_spawned_object, new_object_pose)
-        rospy.sleep(1.5) # Wait for a pose update...
+        rospy.sleep(1.5)  # Wait for a pose update...
 
         object_info = uio.get_object_info(id_of_spawned_object)
         assert object_info is not None
@@ -266,9 +264,6 @@ class TestObject(object):
         assert uio.delete_all_spawned_objects()
         assert uio.spawned_object_count() == 0
         rospy.sleep(0.5)
-
-    def test_delete_all_spawned_objects2(self, function_setup):
-        assert True
 
     def test_delete_all_spawned_objects_by_tag(self, function_setup):
         req = world_control_msgs.srv.SpawnModelRequest()
@@ -361,3 +356,123 @@ class TestObject(object):
         assert uio.delete_object(id_of_spawned_object)
         assert uio.spawned_object_count() == 0
         rospy.sleep(0.5)
+
+    def test_object_in_unreal(self, function_setup):
+        req = world_control_msgs.srv.SpawnModelRequest()
+
+        req.name = "AlbiHimbeerJuice"
+
+        req.pose.position.x = 0.2
+        req.pose.position.y = 0.5
+        req.pose.position.z = 1.00
+        req.pose.orientation.x = 0
+        req.pose.orientation.y = 0
+        req.pose.orientation.z = 0
+        req.pose.orientation.w = 1
+
+        req.physics_properties.mobility = req.physics_properties.STATIONARY
+
+        req.actor_label = "ObjectInUnrealLabel"
+
+        id_of_spawned_object = uio.spawn_object(req)
+        rospy.sleep(1.0)
+        assert uio.spawned_object_count() == 1
+        assert uio.is_object_known(id_of_spawned_object)
+
+        assert uio.object_in_unreal(id_of_spawned_object)
+
+        assert uio.delete_object(id_of_spawned_object)
+        rospy.sleep(1.0)
+
+        assert uio.object_in_unreal(id_of_spawned_object) is False
+
+    def test_detect_single_missing_object_in_unreal(self, function_setup):
+        """
+        It should be possible to detect if unreal has been closed and we have to resync our belief.
+        """
+        req = world_control_msgs.srv.SpawnModelRequest()
+
+        req.name = "AlbiHimbeerJuice"
+
+        req.pose.position.x = 0.2
+        req.pose.position.y = 0.5
+        req.pose.position.z = 1.00
+        req.pose.orientation.x = 0
+        req.pose.orientation.y = 0
+        req.pose.orientation.z = 0
+        req.pose.orientation.w = 1
+
+        req.physics_properties.mobility = req.physics_properties.STATIONARY
+
+        req.actor_label = "detect_single_missing_object_in_unrealLabel"
+
+        id_of_spawned_object = uio.spawn_object(req)
+        rospy.sleep(1.0)
+
+        # use the deleteall service directly to fake closing and opening UE4 without touching
+        # the internal object representation of unreal_interface
+        req = world_control_msgs.srv.DeleteAllRequest()
+        req.key_to_delete = unreal_interface_py.object.DEFAULT_SPAWN_TAG_KEY
+        req.type_to_delete = unreal_interface_py.object.DEFAULT_SPAWN_TAG_TYPE
+        req.ignore_value = True
+        uio.delete_all_client(req)
+        rospy.sleep(1.0)
+
+        assert uio.object_in_unreal(id_of_spawned_object) is False
+        uio.clear_all_object_info()
+
+    def test_all_known_objects_in_unreal(self, function_setup):
+        uio.clear_all_object_info()
+        req = world_control_msgs.srv.SpawnModelRequest()
+
+        req.name = "AlbiHimbeerJuice"
+
+        req.pose.position.x = 0.2
+        req.pose.position.y = 0.5
+        req.pose.position.z = 1.00
+        req.pose.orientation.x = 0
+        req.pose.orientation.y = 0
+        req.pose.orientation.z = 0
+        req.pose.orientation.w = 1
+
+        req.physics_properties.mobility = req.physics_properties.STATIONARY
+
+        req.actor_label = "test_detect_missing_object_between_manyAlbi"
+
+        id_of_spawned_object = uio.spawn_object(req)
+
+        ####################################
+        # Second object
+        ####################################
+
+        req2 = world_control_msgs.srv.SpawnModelRequest()
+
+        req2.name = "PfannerGruneIcetea"
+
+        req2.pose.position.x = 0.2
+        req2.pose.position.y = 0.5
+        req2.pose.position.z = 1.5
+        req2.pose.orientation.x = 0
+        req2.pose.orientation.y = 0
+        req2.pose.orientation.z = 0
+        req2.pose.orientation.w = 1
+
+        req2.physics_properties.mobility = req2.physics_properties.STATIONARY
+
+        req2.actor_label = "test_detect_missing_object_between_manyPfanner"
+
+        id_of_spawned_object2 = uio.spawn_object(req2)
+        rospy.sleep(1.5)
+
+        assert uio.all_known_objects_in_unreal()
+
+        # use the deleteall service directly to fake closing and opening UE4 without touching
+        # the internal object representation of unreal_interface
+        req = world_control_msgs.srv.DeleteAllRequest()
+        req.key_to_delete = unreal_interface_py.object.DEFAULT_SPAWN_TAG_KEY
+        req.type_to_delete = unreal_interface_py.object.DEFAULT_SPAWN_TAG_TYPE
+        req.ignore_value = True
+        uio.delete_all_client(req)
+        rospy.sleep(1.0)
+
+        assert uio.all_known_objects_in_unreal() is False
