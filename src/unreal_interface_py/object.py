@@ -45,6 +45,13 @@ class SpawnFailed(Exception):
         self.message = "Generic spawn failed. No details available from UROSWorldControl about the cause"
         super().__init__(self.message)
 
+class ObjectNotKnown(Exception):
+    """If the requested object is not in our representation, throw an error"""
+
+    def __init__(self):
+        self.message = "Object with given ID is not known in our internal representation. You might have not asserted it before."
+        super().__init__(self.message)
+
 
 class RequestFailed(Exception):
     """Generic request failed for service calls. No details available from UROSWorldControl about the cause.
@@ -356,7 +363,10 @@ class Object:
             raise RequestFailed()
 
         # Update internal representation
-        self.get_object_info(object_id).pose = response.pose
+        object_info = self.get_object_info(object_id)
+        if not object_info:
+            raise ObjectNotKnown()
+        object_info.pose = response.pose
 
         return response.pose
 
