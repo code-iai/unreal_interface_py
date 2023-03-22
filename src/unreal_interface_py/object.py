@@ -98,7 +98,7 @@ class Object:
         self.init()
         self.logger = logging.getLogger(__name__)
 
-    def transport_available(self):
+    def transport_available(self, timeout=TRANSPORT_CHECK_TIMEOUT_TIME):
         """
         Use this method to do a low-level functional check of the transport capabilities.
         In the current version of this library, this method is checking if the necessary
@@ -106,11 +106,11 @@ class Object:
         :return: True if necessary services are available and the corresponding ServiceProxys are up
         """
         try:
-            rospy.wait_for_service(self.spawn_client.resolved_name, timeout=TRANSPORT_CHECK_TIMEOUT_TIME)
-            rospy.wait_for_service(self.delete_client.resolved_name, timeout=TRANSPORT_CHECK_TIMEOUT_TIME)
-            rospy.wait_for_service(self.delete_all_client.resolved_name, timeout=TRANSPORT_CHECK_TIMEOUT_TIME)
-            rospy.wait_for_service(self.set_pose_client.resolved_name, timeout=TRANSPORT_CHECK_TIMEOUT_TIME)
-            rospy.wait_for_service(self.get_pose_client.resolved_name, timeout=TRANSPORT_CHECK_TIMEOUT_TIME)
+            rospy.wait_for_service(self.spawn_client.resolved_name, timeout=timeout)
+            rospy.wait_for_service(self.delete_client.resolved_name, timeout=timeout)
+            rospy.wait_for_service(self.delete_all_client.resolved_name, timeout=timeout)
+            rospy.wait_for_service(self.set_pose_client.resolved_name, timeout=timeout)
+            rospy.wait_for_service(self.get_pose_client.resolved_name, timeout=timeout)
 
         except Exception as e:
             self.logger.info(f"Exception catched in transport_available(): {e}")
